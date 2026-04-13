@@ -116,6 +116,7 @@ Two calls instead of 26 tools cluttering the context.
 | `toolPrefix` | `"server"` (default), `"short"` (strips `-mcp` suffix), or `"none"` |
 | `idleTimeout` | Global idle timeout in minutes (default: 10, 0 to disable) |
 | `directTools` | Global default for all servers (default: false). Per-server overrides this. |
+| `disableProxyTool` | Hide the `mcp` proxy tool once configured direct tools are fully available from cache. |
 
 Per-server `idleTimeout` overrides the global setting.
 

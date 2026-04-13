@@ -21,6 +21,7 @@ import { buildToolMetadata, totalToolCount } from "./tool-metadata.js";
 import { UiResourceHandler } from "./ui-resource-handler.js";
 import { openUrl, parallelLimit } from "./utils.js";
 import { logger } from "./logger.js";
+import { getMissingConfiguredDirectToolServers } from "./direct-tools.js";
 
 const FAILURE_BACKOFF_MS = 60 * 1000;
 
@@ -151,18 +152,8 @@ export async function initializeMcp(
 
   const envDirect = process.env.MCP_DIRECT_TOOLS;
   if (envDirect !== "__none__") {
-    const missingCacheServers: string[] = [];
     const currentCache = loadMetadataCache();
-    for (const [name, definition] of serverEntries) {
-      const hasDirect = definition.directTools !== undefined
-        ? !!definition.directTools
-        : !!config.settings?.directTools;
-      if (!hasDirect) continue;
-      const entry = currentCache?.servers?.[name];
-      if (!entry || !isServerCacheValid(entry, definition)) {
-        missingCacheServers.push(name);
-      }
-    }
+    const missingCacheServers = getMissingConfiguredDirectToolServers(config, currentCache);
 
     if (missingCacheServers.length > 0) {
       const bootstrapResults = await parallelLimit(

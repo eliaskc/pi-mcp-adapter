@@ -117,6 +117,29 @@ export function resolveDirectTools(
   return specs;
 }
 
+export function getMissingConfiguredDirectToolServers(
+  config: McpConfig,
+  cache: MetadataCache | null,
+): string[] {
+  const missing: string[] = [];
+  const globalDirect = config.settings?.directTools;
+
+  for (const [serverName, definition] of Object.entries(config.mcpServers)) {
+    const hasDirectTools = definition.directTools !== undefined
+      ? !!definition.directTools
+      : !!globalDirect;
+
+    if (!hasDirectTools) continue;
+
+    const serverCache = cache?.servers?.[serverName];
+    if (!serverCache || !isServerCacheValid(serverCache, definition)) {
+      missing.push(serverName);
+    }
+  }
+
+  return missing;
+}
+
 export function buildProxyDescription(
   config: McpConfig,
   cache: MetadataCache | null,
