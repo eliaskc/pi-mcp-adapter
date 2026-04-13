@@ -36,6 +36,9 @@ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
 // Track pending transports for auth completion
 const pendingTransports = new Map<string, StreamableHTTPClientTransport>()
 
+// Deduplicate concurrent authenticate() calls per server.
+const pendingAuthentications = new Map<string, Promise<AuthStatus>>()
+
 /**
  * Generate a cryptographically secure random state parameter.
  */
@@ -182,56 +185,74 @@ export async function authenticate(
   serverUrl: string,
   definition?: ServerEntry,
 ): Promise<AuthStatus> {
-  // Start auth flow
-  const { authorizationUrl } = await startAuth(serverName, serverUrl, definition)
-
-  // If no auth URL needed, already authenticated
-  if (!authorizationUrl) {
-    return "authenticated"
+  const inFlight = pendingAuthentications.get(serverName)
+  if (inFlight) {
+    return inFlight
   }
 
-  // Get the state that was already generated and stored in startAuth()
-  const oauthState = await getOAuthState(serverName)
-  if (!oauthState) {
-    throw new Error("OAuth state not found - this should not happen")
-  }
+  const operation = (async (): Promise<AuthStatus> => {
+    // Start auth flow
+    const { authorizationUrl } = await startAuth(serverName, serverUrl, definition)
 
-  // Register the callback BEFORE opening the browser
-  const callbackPromise = waitForCallback(oauthState)
+    // If no auth URL needed, already authenticated
+    if (!authorizationUrl) {
+      return "authenticated"
+    }
 
-  // Open browser
-  console.log(`MCP Auth: Opening browser for ${serverName}`)
-  try {
-    await open(authorizationUrl)
-  } catch (error) {
-    console.warn(`MCP Auth: Failed to open browser for ${serverName}`, { error })
-    throw new Error(
-      `Could not open browser. Please open this URL manually: ${authorizationUrl}`
-    )
-  }
+    // Get the state that was already generated and stored in startAuth()
+    const oauthState = await getOAuthState(serverName)
+    if (!oauthState) {
+      throw new Error("OAuth state not found - this should not happen")
+    }
 
-  try {
-    // Wait for callback
-    const code = await callbackPromise
+    // Register the callback BEFORE opening the browser
+    const callbackPromise = waitForCallback(oauthState)
 
-    // Validate state
-    const storedState = await getOAuthState(serverName)
-    if (storedState !== oauthState) {
+    // Open browser
+    console.log(`MCP Auth: Opening browser for ${serverName}`)
+    try {
+      await open(authorizationUrl)
+    } catch (error) {
+      console.warn(`MCP Auth: Failed to open browser for ${serverName}`, { error })
+      throw new Error(
+        `Could not open browser. Please open this URL manually: ${authorizationUrl}`,
+        { cause: error },
+      )
+    }
+
+    try {
+      // Wait for callback
+      const code = await callbackPromise
+
+      // Validate state
+      const storedState = await getOAuthState(serverName)
+      if (storedState !== oauthState) {
+        await clearOAuthState(serverName)
+        throw new Error("OAuth state mismatch - potential CSRF attack")
+      }
       await clearOAuthState(serverName)
-      throw new Error("OAuth state mismatch - potential CSRF attack")
-    }
-    await clearOAuthState(serverName)
 
-    // Complete the auth
-    return await completeAuth(serverName, code)
-  } catch (error) {
-    cancelPendingCallback(oauthState)
-    const pendingTransport = pendingTransports.get(serverName)
-    if (pendingTransport) {
-      pendingTransports.delete(serverName)
-      await pendingTransport.close().catch(() => {})
+      // Complete the auth
+      return await completeAuth(serverName, code)
+    } catch (error) {
+      cancelPendingCallback(oauthState)
+      const pendingTransport = pendingTransports.get(serverName)
+      if (pendingTransport) {
+        pendingTransports.delete(serverName)
+        await pendingTransport.close().catch(() => {})
+      }
+      throw error
     }
-    throw error
+  })()
+
+  pendingAuthentications.set(serverName, operation)
+
+  try {
+    return await operation
+  } finally {
+    if (pendingAuthentications.get(serverName) === operation) {
+      pendingAuthentications.delete(serverName)
+    }
   }
 }
 

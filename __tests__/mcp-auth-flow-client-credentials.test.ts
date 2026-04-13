@@ -79,6 +79,35 @@ describe("mcp-auth-flow client_credentials", () => {
     expect(mocks.open).not.toHaveBeenCalled();
   });
 
+  it("deduplicates concurrent authentication attempts for the same server", async () => {
+    const { authenticate } = await import("../mcp-auth-flow.ts");
+
+    const [first, second] = await Promise.all([
+      authenticate("svc", "https://api.example.com/mcp", {
+        url: "https://api.example.com/mcp",
+        auth: "oauth",
+        oauth: {
+          grantType: "client_credentials",
+          clientId: "service-client",
+          clientSecret: "service-secret",
+        },
+      }),
+      authenticate("svc", "https://api.example.com/mcp", {
+        url: "https://api.example.com/mcp",
+        auth: "oauth",
+        oauth: {
+          grantType: "client_credentials",
+          clientId: "service-client",
+          clientSecret: "service-secret",
+        },
+      }),
+    ]);
+
+    expect(first).toBe("authenticated");
+    expect(second).toBe("authenticated");
+    expect(mocks.clientConnect).toHaveBeenCalledTimes(1);
+  });
+
   it("enforces strict callback port for pre-registered OAuth clients", async () => {
     const { startAuth } = await import("../mcp-auth-flow.ts");
 

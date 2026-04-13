@@ -107,6 +107,8 @@ Run the `/mcp-auth` command with the server name:
 /mcp-auth my-oauth-server
 ```
 
+Manual `/mcp-auth` is the default flow. If you set `settings.autoAuth: true`, proxy/direct tool execution will trigger OAuth automatically when a server returns `needs-auth`, then retry the original operation once.
+
 This will:
 1. Start the callback server (configured port, default `19876`)
 2. Discover OAuth endpoints automatically

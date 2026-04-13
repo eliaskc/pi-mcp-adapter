@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-04-13
+
 ### Added
 - `settings.disableProxyTool` to hide the `mcp` proxy tool once configured direct tools are fully available from cache. Thanks @tanavamsikrishna for PR #41.
 - Per-server `excludeTools` to hide specific MCP tools/resources by original or prefixed name across direct tools, proxy discovery, and the `/mcp` panel. Thanks @ahmadaccino for issue #36.
+- `settings.autoAuth` to optionally trigger OAuth automatically from proxy/direct tool usage, then rerun the original blocked connect/tool operation once after authentication succeeds. Thanks @unimonkiez for issue #34.
 
 ### Fixed
 - Regenerated `package-lock.json` so the root lockfile metadata matches `package.json` again, including the declared `open`, `@types/bun`, `@types/open`, and `tsx` entries.

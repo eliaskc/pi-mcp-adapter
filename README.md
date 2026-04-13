@@ -118,6 +118,7 @@ Two calls instead of 26 tools cluttering the context.
 | `idleTimeout` | Global idle timeout in minutes (default: 10, 0 to disable) |
 | `directTools` | Global default for all servers (default: false). Per-server overrides this. |
 | `disableProxyTool` | Hide the `mcp` proxy tool once configured direct tools are fully available from cache. |
+| `autoAuth` | Auto-run OAuth on `connect`/tool calls when a server needs auth, then retry once (default: false). |
 
 Per-server `idleTimeout` overrides the global setting.
 
@@ -296,6 +297,8 @@ Tool names are fuzzy-matched on hyphens and underscores — `context7_resolve_li
 | `/mcp reconnect` | Reconnect all servers |
 | `/mcp reconnect <server>` | Connect or reconnect a single server |
 | `/mcp-auth <server>` | OAuth setup |
+
+If `settings.autoAuth` is `true`, `mcp({ connect: ... })`, `mcp({ tool: ... })`, and direct tool calls will automatically run OAuth when needed and retry once. In non-interactive sessions, browser-based OAuth still requires running `/mcp-auth <server>` manually.
 
 ## How It Works
 

@@ -7,8 +7,51 @@ import { buildToolMetadata, getToolNames, findToolByName, formatSchema } from ".
 import { transformMcpContent } from "./tool-registrar.js";
 import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js";
 import { truncateAtWord } from "./utils.js";
+import { authenticate, supportsOAuth } from "./mcp-auth-flow.js";
 
 type ProxyToolResult = AgentToolResult<Record<string, unknown>>;
+
+type AutoAuthResult =
+  | { status: "skipped" }
+  | { status: "success" }
+  | { status: "failed"; message: string };
+
+function getAuthRequiredMessage(serverName: string): string {
+  return `Server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} first.`;
+}
+
+async function attemptAutoAuth(
+  state: McpExtensionState,
+  serverName: string,
+): Promise<AutoAuthResult> {
+  if (state.config.settings?.autoAuth !== true) {
+    return { status: "skipped" };
+  }
+
+  const definition = state.config.mcpServers[serverName];
+  if (!definition || !supportsOAuth(definition) || !definition.url) {
+    return { status: "skipped" };
+  }
+
+  const grantType = definition.oauth?.grantType ?? "authorization_code";
+  if (!state.ui && grantType !== "client_credentials") {
+    return {
+      status: "failed",
+      message: `Server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} in an interactive session.`,
+    };
+  }
+
+  try {
+    await authenticate(serverName, definition.url, definition);
+    return { status: "success" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: "failed",
+      message: `OAuth authentication failed for "${serverName}": ${message}. Run /mcp-auth ${serverName} first.`,
+    };
+  }
+}
 
 export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
   const sessions = state.completedUiSessions;
@@ -376,12 +419,26 @@ export async function executeConnect(state: McpExtensionState, serverName: strin
     if (state.ui) {
       state.ui.setStatus("mcp", `MCP: connecting to ${serverName}...`);
     }
-    const connection = await state.manager.connect(serverName, definition);
+    let connection = await state.manager.connect(serverName, definition);
     if (connection.status === "needs-auth") {
-      return {
-        content: [{ type: "text" as const, text: `Server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} first.` }],
-        details: { mode: "connect", error: "auth_required", server: serverName },
-      };
+      const autoAuth = await attemptAutoAuth(state, serverName);
+      if (autoAuth.status === "failed") {
+        return {
+          content: [{ type: "text" as const, text: autoAuth.message }],
+          details: { mode: "connect", error: "auth_required", server: serverName, message: autoAuth.message },
+        };
+      }
+      if (autoAuth.status === "success") {
+        await state.manager.close(serverName);
+        connection = await state.manager.connect(serverName, definition);
+      }
+      if (connection.status === "needs-auth") {
+        const message = getAuthRequiredMessage(serverName);
+        return {
+          content: [{ type: "text" as const, text: message }],
+          details: { mode: "connect", error: "auth_required", server: serverName, message },
+        };
+      }
     }
     const prefix = state.config.settings?.toolPrefix ?? "server";
     const { metadata } = buildToolMetadata(connection.tools, connection.resources, definition, serverName, prefix);
@@ -409,6 +466,7 @@ export async function executeCall(
 ): Promise<ProxyToolResult> {
   let serverName: string | undefined = serverOverride;
   let toolMeta: ToolMetadata | undefined;
+  let autoAuthAttempted = false;
   const prefixMode = state.config.settings?.toolPrefix ?? "server";
 
   if (serverName && !state.config.mcpServers[serverName]) {
@@ -438,17 +496,48 @@ export async function executeCall(
     } else {
       const needsAuthConnection = state.manager.getConnection(serverName);
       if (needsAuthConnection?.status === "needs-auth") {
-        return {
-          content: [{ type: "text" as const, text: `Server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} first.` }],
-          details: { mode: "call", error: "auth_required", server: serverName },
-        };
+        if (!autoAuthAttempted) {
+          autoAuthAttempted = true;
+          const autoAuth = await attemptAutoAuth(state, serverName);
+          if (autoAuth.status === "failed") {
+            return {
+              content: [{ type: "text" as const, text: autoAuth.message }],
+              details: { mode: "call", error: "auth_required", server: serverName, message: autoAuth.message },
+            };
+          }
+          if (autoAuth.status === "success") {
+            await state.manager.close(serverName);
+            state.failureTracker.delete(serverName);
+            const connectedAfterAuth = await lazyConnect(state, serverName);
+            if (connectedAfterAuth) {
+              toolMeta = findToolByName(state.toolMetadata.get(serverName), toolName);
+              if (!toolMeta) {
+                return {
+                  content: [{ type: "text" as const, text: `Tool "${toolName}" not found on "${serverName}" after reconnect.` }],
+                  details: { mode: "call", error: "tool_not_found_after_reconnect", requestedTool: toolName },
+                };
+              }
+            }
+          }
+        }
+
+        if (!toolMeta && state.manager.getConnection(serverName)?.status === "needs-auth") {
+          const message = getAuthRequiredMessage(serverName);
+          return {
+            content: [{ type: "text" as const, text: message }],
+            details: { mode: "call", error: "auth_required", server: serverName, message },
+          };
+        }
       }
-      const failedAgo = getFailureAgeSeconds(state, serverName);
-      if (failedAgo !== null) {
-        return {
-          content: [{ type: "text" as const, text: `Server "${serverName}" not available (last failed ${failedAgo}s ago)` }],
-          details: { mode: "call", error: "server_backoff", server: serverName },
-        };
+
+      if (!toolMeta) {
+        const failedAgo = getFailureAgeSeconds(state, serverName);
+        if (failedAgo !== null) {
+          return {
+            content: [{ type: "text" as const, text: `Server "${serverName}" not available (last failed ${failedAgo}s ago)` }],
+            details: { mode: "call", error: "server_backoff", server: serverName },
+          };
+        }
       }
     }
   }
@@ -462,9 +551,27 @@ export async function executeCall(
       .sort((a, b) => b.prefix.length - a.prefix.length);
 
     for (const { name: configuredServer } of candidates) {
+      const existingConnection = state.manager.getConnection(configuredServer);
       const failedAgo = getFailureAgeSeconds(state, configuredServer);
-      if (failedAgo !== null) continue;
-      const connected = await lazyConnect(state, configuredServer);
+      if (failedAgo !== null && existingConnection?.status !== "needs-auth") continue;
+
+      let connected = await lazyConnect(state, configuredServer);
+      if (!connected && state.manager.getConnection(configuredServer)?.status === "needs-auth" && !autoAuthAttempted) {
+        autoAuthAttempted = true;
+        const autoAuth = await attemptAutoAuth(state, configuredServer);
+        if (autoAuth.status === "failed") {
+          return {
+            content: [{ type: "text" as const, text: autoAuth.message }],
+            details: { mode: "call", error: "auth_required", server: configuredServer, message: autoAuth.message },
+          };
+        }
+        if (autoAuth.status === "success") {
+          await state.manager.close(configuredServer);
+          state.failureTracker.delete(configuredServer);
+          connected = await lazyConnect(state, configuredServer);
+        }
+      }
+
       if (!connected) continue;
       if (!prefixMatchedServer) prefixMatchedServer = configuredServer;
       toolMeta = findToolByName(state.toolMetadata.get(configuredServer), toolName);
@@ -492,10 +599,29 @@ export async function executeCall(
 
   let connection = state.manager.getConnection(serverName);
   if (connection?.status === "needs-auth") {
-    return {
-      content: [{ type: "text" as const, text: `Server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} first.` }],
-      details: { mode: "call", error: "auth_required", server: serverName },
-    };
+    if (!autoAuthAttempted) {
+      autoAuthAttempted = true;
+      const autoAuth = await attemptAutoAuth(state, serverName);
+      if (autoAuth.status === "failed") {
+        return {
+          content: [{ type: "text" as const, text: autoAuth.message }],
+          details: { mode: "call", error: "auth_required", server: serverName, message: autoAuth.message },
+        };
+      }
+      if (autoAuth.status === "success") {
+        await state.manager.close(serverName);
+        state.failureTracker.delete(serverName);
+        connection = state.manager.getConnection(serverName);
+      }
+    }
+
+    if (connection?.status === "needs-auth") {
+      const message = getAuthRequiredMessage(serverName);
+      return {
+        content: [{ type: "text" as const, text: message }],
+        details: { mode: "call", error: "auth_required", server: serverName, message },
+      };
+    }
   }
   if (!connection || connection.status !== "connected") {
     const failedAgo = getFailureAgeSeconds(state, serverName);
@@ -520,10 +646,28 @@ export async function executeCall(
       }
       connection = await state.manager.connect(serverName, definition);
       if (connection.status === "needs-auth") {
-        return {
-          content: [{ type: "text" as const, text: `Server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} first.` }],
-          details: { mode: "call", error: "auth_required", server: serverName },
-        };
+        if (!autoAuthAttempted) {
+          autoAuthAttempted = true;
+          const autoAuth = await attemptAutoAuth(state, serverName);
+          if (autoAuth.status === "failed") {
+            return {
+              content: [{ type: "text" as const, text: autoAuth.message }],
+              details: { mode: "call", error: "auth_required", server: serverName, message: autoAuth.message },
+            };
+          }
+          if (autoAuth.status === "success") {
+            await state.manager.close(serverName);
+            connection = await state.manager.connect(serverName, definition);
+          }
+        }
+
+        if (connection.status === "needs-auth") {
+          const message = getAuthRequiredMessage(serverName);
+          return {
+            content: [{ type: "text" as const, text: message }],
+            details: { mode: "call", error: "auth_required", server: serverName, message },
+          };
+        }
       }
       state.failureTracker.delete(serverName);
       updateServerMetadata(state, serverName);

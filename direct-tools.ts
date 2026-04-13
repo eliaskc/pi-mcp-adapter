@@ -9,8 +9,47 @@ import { transformMcpContent } from "./tool-registrar.js";
 import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js";
 import { formatToolName, isToolExcluded } from "./types.js";
 import { resourceNameToToolName } from "./resource-tools.js";
+import { authenticate, supportsOAuth } from "./mcp-auth-flow.js";
 
 const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"]);
+
+type DirectAutoAuthResult =
+  | { status: "skipped" }
+  | { status: "success" }
+  | { status: "failed"; message: string };
+
+async function attemptDirectAutoAuth(
+  state: McpExtensionState,
+  serverName: string,
+): Promise<DirectAutoAuthResult> {
+  if (state.config.settings?.autoAuth !== true) {
+    return { status: "skipped" };
+  }
+
+  const definition = state.config.mcpServers[serverName];
+  if (!definition || !supportsOAuth(definition) || !definition.url) {
+    return { status: "skipped" };
+  }
+
+  const grantType = definition.oauth?.grantType ?? "authorization_code";
+  if (!state.ui && grantType !== "client_credentials") {
+    return {
+      status: "failed",
+      message: `MCP server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} in an interactive session.`,
+    };
+  }
+
+  try {
+    await authenticate(serverName, definition.url, definition);
+    return { status: "success" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: "failed",
+      message: `OAuth authentication failed for "${serverName}": ${message}. Run /mcp-auth ${serverName} first.`,
+    };
+  }
+}
 
 export function resolveDirectTools(
   config: McpConfig,
@@ -229,13 +268,32 @@ export function createDirectToolExecutor(
       };
     }
 
-    const connected = await lazyConnect(state, spec.serverName);
+    let connected = await lazyConnect(state, spec.serverName);
+    let autoAuthAttempted = false;
+
+    if (!connected && state.manager.getConnection(spec.serverName)?.status === "needs-auth") {
+      autoAuthAttempted = true;
+      const autoAuth = await attemptDirectAutoAuth(state, spec.serverName);
+      if (autoAuth.status === "failed") {
+        return {
+          content: [{ type: "text" as const, text: autoAuth.message }],
+          details: { error: "auth_required", server: spec.serverName, message: autoAuth.message },
+        };
+      }
+      if (autoAuth.status === "success") {
+        await state.manager.close(spec.serverName);
+        state.failureTracker.delete(spec.serverName);
+        connected = await lazyConnect(state, spec.serverName);
+      }
+    }
+
     if (!connected) {
       const authConnection = state.manager.getConnection(spec.serverName);
       if (authConnection?.status === "needs-auth") {
+        const message = `MCP server "${spec.serverName}" requires OAuth authentication. Run /mcp-auth ${spec.serverName} first.`;
         return {
-          content: [{ type: "text" as const, text: `MCP server "${spec.serverName}" requires OAuth authentication. Run /mcp-auth ${spec.serverName} first.` }],
-          details: { error: "auth_required", server: spec.serverName },
+          content: [{ type: "text" as const, text: message }],
+          details: { error: "auth_required", server: spec.serverName, message, autoAuthAttempted },
         };
       }
       const failedAgo = getFailureAgeSeconds(state, spec.serverName);

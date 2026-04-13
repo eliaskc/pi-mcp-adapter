@@ -317,6 +317,7 @@ export interface McpSettings {
   idleTimeout?: number; // minutes, default 10, 0 to disable
   directTools?: boolean;
   disableProxyTool?: boolean;
+  autoAuth?: boolean;
 }
 
 // Root config
