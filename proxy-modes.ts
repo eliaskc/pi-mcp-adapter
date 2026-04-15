@@ -8,6 +8,7 @@ import { transformMcpContent } from "./tool-registrar.js";
 import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js";
 import { truncateAtWord } from "./utils.js";
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.js";
+import { truncateContentForModel } from "./truncation.js";
 
 type ProxyToolResult = AgentToolResult<Record<string, unknown>>;
 
@@ -119,14 +120,19 @@ export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
   const count = sessions.length;
   state.completedUiSessions = [];
 
+  const { content, details: truncationDetails } = truncateContentForModel([
+    { type: "text" as const, text: output.join("\n") },
+  ]);
+
   return {
-    content: [{ type: "text" as const, text: output.join("\n") }],
+    content,
     details: {
       sessions: count,
       prompts: allPrompts,
       intents: [...allIntents, ...parsedHandoffs.map(({ intent, params }) => ({ intent, params }))],
       handoffs: parsedHandoffs,
       cleared: true,
+      ...truncationDetails,
     },
   };
 }
@@ -222,9 +228,13 @@ export function executeDescribe(state: McpExtensionState, toolName: string): Pro
     text += `\nNo parameters defined.`;
   }
 
+  const { content, details: truncationDetails } = truncateContentForModel([
+    { type: "text" as const, text: text.trim() },
+  ]);
+
   return {
-    content: [{ type: "text" as const, text: text.trim() }],
-    details: { mode: "describe", tool: toolMeta, server: serverName },
+    content,
+    details: { mode: "describe", tool: toolMeta, server: serverName, ...truncationDetails },
   };
 }
 
@@ -337,8 +347,12 @@ export function executeSearch(
     }
   }
 
+  const { content, details: truncationDetails } = truncateContentForModel([
+    { type: "text" as const, text: text.trim() },
+  ]);
+
   return {
-    content: [{ type: "text" as const, text: text.trim() }],
+    content,
     details: {
       mode: "search",
       matches: [
@@ -347,6 +361,7 @@ export function executeSearch(
       ],
       count: totalCount,
       query,
+      ...truncationDetails,
     },
   };
 }
@@ -400,9 +415,13 @@ export function executeList(state: McpExtensionState, server: string): ProxyTool
     text += "\n";
   }
 
+  const { content, details: truncationDetails } = truncateContentForModel([
+    { type: "text" as const, text: text.trim() },
+  ]);
+
   return {
-    content: [{ type: "text" as const, text: text.trim() }],
-    details: { mode: "list", server, tools: toolNames, count: toolNames.length },
+    content,
+    details: { mode: "list", server, tools: toolNames, count: toolNames.length, ...truncationDetails },
   };
 }
 
@@ -703,13 +722,16 @@ export async function executeCall(
 
     if (toolMeta.resourceUri) {
       const result = await connection.client.readResource({ uri: toolMeta.resourceUri });
-      const content = (result.contents ?? []).map(c => ({
+      const rawContent = (result.contents ?? []).map(c => ({
         type: "text" as const,
         text: "text" in c ? c.text : ("blob" in c ? `[Binary data: ${(c as { mimeType?: string }).mimeType ?? "unknown"}]` : JSON.stringify(c)),
       }));
+      const { content, details: truncationDetails } = truncateContentForModel(
+        rawContent.length > 0 ? rawContent : [{ type: "text" as const, text: "(empty resource)" }],
+      );
       return {
-        content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty resource)" }],
-        details: { mode: "call", resourceUri: toolMeta.resourceUri, server: serverName },
+        content,
+        details: { mode: "call", resourceUri: toolMeta.resourceUri, server: serverName, ...truncationDetails },
       };
     }
 
@@ -745,9 +767,12 @@ export async function executeCall(
         if (toolMeta.inputSchema) {
           errorWithSchema += `\n\nExpected parameters:\n${formatSchema(toolMeta.inputSchema)}`;
         }
+        const { content: truncatedContent, details: truncationDetails } = truncateContentForModel([
+          { type: "text" as const, text: errorWithSchema },
+        ]);
         return {
-          content: [{ type: "text" as const, text: errorWithSchema }],
-          details: { mode: "call", error: "tool_error", mcpResult: result },
+          content: truncatedContent,
+          details: { mode: "call", error: "tool_error", mcpResult: result, ...truncationDetails },
         };
       }
 
@@ -755,9 +780,12 @@ export async function executeCall(
       const uiMessage = uiSession?.reused
         ? "Updated the open UI."
         : "📺 Interactive UI is now open in your browser. I'll respond to your prompts and intents as you interact with it.";
+      const { content: truncatedContent, details: truncationDetails } = truncateContentForModel([
+        { type: "text" as const, text: `${resultText}\n\n${uiMessage}` },
+      ]);
       return {
-        content: [{ type: "text" as const, text: `${resultText}\n\n${uiMessage}` }],
-        details: { mode: "call", mcpResult: result, server: serverName, tool: toolMeta.originalName, uiOpen: true },
+        content: truncatedContent,
+        details: { mode: "call", mcpResult: result, server: serverName, tool: toolMeta.originalName, uiOpen: true, ...truncationDetails },
       };
     }
 
@@ -777,15 +805,21 @@ export async function executeCall(
         errorWithSchema += `\n\nExpected parameters:\n${formatSchema(toolMeta.inputSchema)}`;
       }
 
+      const { content: truncatedContent, details: truncationDetails } = truncateContentForModel([
+        { type: "text" as const, text: errorWithSchema },
+      ]);
       return {
-        content: [{ type: "text" as const, text: errorWithSchema }],
-        details: { mode: "call", error: "tool_error", mcpResult: result },
+        content: truncatedContent,
+        details: { mode: "call", error: "tool_error", mcpResult: result, ...truncationDetails },
       };
     }
 
+    const { content: truncatedContent, details: truncationDetails } = truncateContentForModel(
+      content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
+    );
     return {
-      content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
-      details: { mode: "call", mcpResult: result, server: serverName, tool: toolMeta.originalName },
+      content: truncatedContent,
+      details: { mode: "call", mcpResult: result, server: serverName, tool: toolMeta.originalName, ...truncationDetails },
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -796,9 +830,12 @@ export async function executeCall(
       errorWithSchema += `\n\nExpected parameters:\n${formatSchema(toolMeta.inputSchema)}`;
     }
 
+    const { content: truncatedContent, details: truncationDetails } = truncateContentForModel([
+      { type: "text" as const, text: errorWithSchema },
+    ]);
     return {
-      content: [{ type: "text" as const, text: errorWithSchema }],
-      details: { mode: "call", error: "call_failed", message },
+      content: truncatedContent,
+      details: { mode: "call", error: "call_failed", message, ...truncationDetails },
     };
   } finally {
     if (uiSession?.reused) {

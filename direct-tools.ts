@@ -10,6 +10,7 @@ import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js";
 import { formatToolName, isToolExcluded } from "./types.js";
 import { resourceNameToToolName } from "./resource-tools.js";
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.js";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateContentForModel } from "./truncation.js";
 
 const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"]);
 
@@ -188,6 +189,7 @@ export function buildProxyDescription(
 ): string {
   const prefix = config.settings?.toolPrefix ?? "server";
   let desc = `MCP gateway - connect to MCP servers and call their tools.\n`;
+  desc += `Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)} (whichever is hit first). If truncated, full output is saved to a temp file.\n`;
 
   const directByServer = new Map<string, number>();
   for (const spec of directSpecs) {
@@ -319,13 +321,16 @@ export function createDirectToolExecutor(
 
       if (spec.resourceUri) {
         const result = await connection.client.readResource({ uri: spec.resourceUri });
-        const content = (result.contents ?? []).map(c => ({
+        const rawContent = (result.contents ?? []).map(c => ({
           type: "text" as const,
           text: "text" in c ? c.text : ("blob" in c ? `[Binary data: ${(c as { mimeType?: string }).mimeType ?? "unknown"}]` : JSON.stringify(c)),
         }));
+        const { content, details: truncationDetails } = await truncateContentForModel(
+          rawContent.length > 0 ? rawContent : [{ type: "text" as const, text: "(empty resource)" }],
+        );
         return {
-          content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty resource)" }],
-          details: { server: spec.serverName, resourceUri: spec.resourceUri },
+          content,
+          details: { server: spec.serverName, resourceUri: spec.resourceUri, ...truncationDetails },
         };
       }
 
@@ -357,9 +362,12 @@ export function createDirectToolExecutor(
         if (spec.inputSchema) {
           errorText += `\n\nExpected parameters:\n${formatSchema(spec.inputSchema)}`;
         }
+        const { content: truncatedContent, details: truncationDetails } = await truncateContentForModel([
+          { type: "text" as const, text: `Error: ${errorText}` },
+        ]);
         return {
-          content: [{ type: "text" as const, text: `Error: ${errorText}` }],
-          details: { error: "tool_error", server: spec.serverName },
+          content: truncatedContent,
+          details: { error: "tool_error", server: spec.serverName, ...truncationDetails },
         };
       }
 
@@ -368,15 +376,21 @@ export function createDirectToolExecutor(
         const uiMessage = uiSession?.reused
           ? "Updated the open UI."
           : "📺 Interactive UI is now open in your browser. I'll respond to your prompts and intents as you interact with it.";
+        const { content: truncatedContent, details: truncationDetails } = await truncateContentForModel([
+          { type: "text" as const, text: `${resultText}\n\n${uiMessage}` },
+        ]);
         return {
-          content: [{ type: "text" as const, text: `${resultText}\n\n${uiMessage}` }],
-          details: { server: spec.serverName, tool: spec.originalName, uiOpen: true },
+          content: truncatedContent,
+          details: { server: spec.serverName, tool: spec.originalName, uiOpen: true, ...truncationDetails },
         };
       }
 
+      const { content: truncatedContent, details: truncationDetails } = await truncateContentForModel(
+        content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
+      );
       return {
-        content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
-        details: { server: spec.serverName, tool: spec.originalName },
+        content: truncatedContent,
+        details: { server: spec.serverName, tool: spec.originalName, ...truncationDetails },
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -385,9 +399,12 @@ export function createDirectToolExecutor(
       if (spec.inputSchema) {
         errorText += `\n\nExpected parameters:\n${formatSchema(spec.inputSchema)}`;
       }
+      const { content: truncatedContent, details: truncationDetails } = await truncateContentForModel([
+        { type: "text" as const, text: errorText },
+      ]);
       return {
-        content: [{ type: "text" as const, text: errorText }],
-        details: { error: "call_failed", server: spec.serverName },
+        content: truncatedContent,
+        details: { error: "call_failed", server: spec.serverName, ...truncationDetails },
       };
     } finally {
       if (uiSession?.reused) {

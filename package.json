@@ -47,6 +47,7 @@
     "commands.ts",
     "types.ts",
     "ui-stream-types.ts",
+    "truncation.ts",
     "config.ts",
     "server-manager.ts",
     "tool-registrar.ts",

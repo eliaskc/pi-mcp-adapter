@@ -9,6 +9,7 @@ import { loadMetadataCache } from "./metadata-cache.js";
 import { executeCall, executeConnect, executeDescribe, executeList, executeSearch, executeStatus, executeUiMessages } from "./proxy-modes.js";
 import { getConfigPathFromArgv, truncateAtWord } from "./utils.js";
 import { initializeOAuth, shutdownOAuth } from "./mcp-auth-flow.js";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, renderTruncatedToolResult } from "./truncation.js";
 
 export default function mcpAdapter(pi: ExtensionAPI) {
   let state: McpExtensionState | null = null;
@@ -47,6 +48,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 
   const earlyConfigPath = getConfigPathFromArgv();
   const earlyConfig = loadMcpConfig(earlyConfigPath);
+  const truncationNote = `\n\nOutput is truncated to last ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)} (whichever is hit first). If truncated, full output is saved to a temp file.`;
   const earlyCache = loadMetadataCache();
   const prefix = earlyConfig.settings?.toolPrefix ?? "server";
 
@@ -69,10 +71,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     pi.registerTool({
       name: spec.prefixedName,
       label: `MCP: ${spec.originalName}`,
-      description: spec.description || "(no description)",
+      description: `${spec.description || "(no description)"}${truncationNote}`,
       promptSnippet: truncateAtWord(spec.description, 100) || `MCP tool from ${spec.serverName}`,
       parameters: Type.Unsafe<Record<string, unknown>>(spec.inputSchema || { type: "object", properties: {} }),
       execute: createDirectToolExecutor(() => state, () => initPromise, spec),
+      renderResult: renderTruncatedToolResult,
     });
   }
 
@@ -224,6 +227,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
       label: "MCP",
       description: buildProxyDescription(earlyConfig, earlyCache, directSpecs),
       promptSnippet: "MCP gateway - connect to MCP servers and call their tools",
+      renderResult: renderTruncatedToolResult,
       parameters: Type.Object({
         tool: Type.Optional(Type.String({ description: "Tool name to call (e.g., 'xcodebuild_list_sims')" })),
         args: Type.Optional(Type.String({ description: "Arguments as JSON string (e.g., '{\"key\": \"value\"}')" })),
