@@ -6,7 +6,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -43,9 +43,7 @@ export function truncateToolOutput(text: string): {
 
   // Save full output to temp file
   const fullOutputPath = getTempFilePath();
-  const stream = createWriteStream(fullOutputPath);
-  stream.write(text);
-  stream.end();
+  writeFileSync(fullOutputPath, text, "utf-8");
 
   let outputText = truncation.content;
 
