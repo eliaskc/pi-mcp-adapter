@@ -9,7 +9,6 @@ import { loadMetadataCache } from "./metadata-cache.js";
 import { executeCall, executeConnect, executeDescribe, executeList, executeSearch, executeStatus, executeUiMessages } from "./proxy-modes.js";
 import { getConfigPathFromArgv, truncateAtWord } from "./utils.js";
 import { initializeOAuth, shutdownOAuth } from "./mcp-auth-flow.js";
-import { renderProxyCall, renderDirectCall, renderMcpResult } from "./tool-render.js";
 
 export default function mcpAdapter(pi: ExtensionAPI) {
   let state: McpExtensionState | null = null;
@@ -67,16 +66,13 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     || missingConfiguredDirectToolServers.length > 0;
 
   for (const spec of directSpecs) {
-    const directLabel = `MCP: ${spec.originalName}`;
     pi.registerTool({
       name: spec.prefixedName,
-      label: directLabel,
+      label: `MCP: ${spec.originalName}`,
       description: spec.description || "(no description)",
       promptSnippet: truncateAtWord(spec.description, 100) || `MCP tool from ${spec.serverName}`,
       parameters: Type.Unsafe<Record<string, unknown>>(spec.inputSchema || { type: "object", properties: {} }),
       execute: createDirectToolExecutor(() => state, () => initPromise, spec),
-      renderCall: (args, theme, context) => renderDirectCall(directLabel, args, theme, context),
-      renderResult: renderMcpResult,
     });
   }
 
@@ -304,8 +300,6 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         }
         return executeStatus(state);
       },
-      renderCall: renderProxyCall,
-      renderResult: renderMcpResult,
     });
   }
 }

@@ -1,6 +1,12 @@
 /**
  * Output truncation for MCP tool results.
  *
+ * TODO: The TUI collapsed preview currently shows the full (truncated) text
+ * because we rely on pi's default renderer. To get proper collapsed/expanded
+ * behavior (show first N visual lines, "X more lines, Ctrl+O to expand"),
+ * register a renderResult that uses pi's truncateToVisualLines(). See
+ * examples/extensions/truncated-tool.ts in pi-coding-agent for the pattern.
+ *
  * Uses pi's exported truncation utilities as recommended by the extension docs.
  * See: extensions.md § "Tools MUST truncate their output"
  */
@@ -10,7 +16,7 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  truncateTail,
+  truncateHead,
   formatSize,
   DEFAULT_MAX_LINES,
   DEFAULT_MAX_BYTES,
@@ -26,7 +32,10 @@ export interface McpTruncationDetails {
 }
 
 /**
- * Apply tail truncation to MCP tool result text.
+ * Apply head truncation to MCP tool result text — keeps the first N lines/bytes.
+ *
+ * MCP tool results are document-like (guides, lists, structured data) where the
+ * beginning is most important, unlike bash output where the end matters.
  *
  * Returns the (possibly truncated) text with an appended notice,
  * and structured details for the UI renderer.
@@ -35,7 +44,7 @@ export function truncateToolOutput(text: string): {
   text: string;
   details: McpTruncationDetails;
 } {
-  const truncation = truncateTail(text);
+  const truncation = truncateHead(text);
 
   if (!truncation.truncated) {
     return { text: truncation.content, details: {} };
@@ -45,20 +54,26 @@ export function truncateToolOutput(text: string): {
   const fullOutputPath = getTempFilePath();
   writeFileSync(fullOutputPath, text, "utf-8");
 
-  let outputText = truncation.content;
+  let outputText: string;
+  const endLine = truncation.outputLines;
 
-  const startLine = truncation.totalLines - truncation.outputLines + 1;
-  const endLine = truncation.totalLines;
-
-  if (truncation.lastLinePartial) {
-    const lastLineSize = formatSize(
-      Buffer.byteLength(text.split("\n").pop() || "", "utf-8"),
+  if (truncation.firstLineExceedsLimit) {
+    // Single huge line (e.g. minified JSON) — truncate the line itself to the byte limit
+    outputText = truncateStringToBytes(text, DEFAULT_MAX_BYTES);
+    outputText += `\n\n[Showing first ${formatSize(DEFAULT_MAX_BYTES)} of line 1 (line is ${formatSize(truncation.totalBytes)}). Full output: ${fullOutputPath}]`;
+  } else if (truncation.lastLinePartial) {
+    outputText = truncation.content;
+    const firstLineSize = formatSize(
+      Buffer.byteLength(text.split("\n")[0] || "", "utf-8"),
     );
-    outputText += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${fullOutputPath}]`;
-  } else if (truncation.truncatedBy === "lines") {
-    outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${fullOutputPath}]`;
+    outputText += `\n\n[Showing first ${formatSize(truncation.outputBytes)} of line 1 (line is ${firstLineSize}). Full output: ${fullOutputPath}]`;
   } else {
-    outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${fullOutputPath}]`;
+    outputText = truncation.content;
+    if (truncation.truncatedBy === "lines") {
+      outputText += `\n\n[Showing lines 1-${endLine} of ${truncation.totalLines}. Full output: ${fullOutputPath}]`;
+    } else {
+      outputText += `\n\n[Showing lines 1-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${fullOutputPath}]`;
+    }
   }
 
   return {
@@ -70,7 +85,7 @@ export function truncateToolOutput(text: string): {
 /**
  * Apply truncation to an array of content blocks.
  *
- * Concatenates all text blocks, applies tail truncation, and returns
+ * Concatenates all text blocks, applies head truncation, and returns
  * a new content array with the truncated text + any non-text blocks preserved.
  * Also returns truncation details for the UI renderer.
  */
@@ -102,6 +117,17 @@ export function truncateContentBlocks(content: ContentBlock[]): {
   ];
 
   return { content: result, truncationDetails: details };
+}
+
+function truncateStringToBytes(str: string, maxBytes: number): string {
+  const buf = Buffer.from(str, "utf-8");
+  if (buf.length <= maxBytes) return str;
+  // Walk back from maxBytes to avoid splitting a multi-byte UTF-8 character
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) {
+    end--;
+  }
+  return buf.slice(0, end).toString("utf-8");
 }
 
 function getTempFilePath(): string {

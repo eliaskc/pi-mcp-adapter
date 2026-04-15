@@ -51,7 +51,6 @@
     "server-manager.ts",
     "tool-registrar.ts",
     "truncation.ts",
-    "tool-render.ts",
     "resource-tools.ts",
     "lifecycle.ts",
     "metadata-cache.ts",
