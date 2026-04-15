@@ -35,8 +35,8 @@ export function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-// Mirrors Pi's truncateTail behavior.
-export function truncateTail(content: string, options: { maxLines?: number; maxBytes?: number } = {}): TruncationResult {
+// Mirrors Pi's truncateHead behavior — keeps the first N lines/bytes.
+export function truncateHead(content: string, options: { maxLines?: number; maxBytes?: number } = {}): TruncationResult {
   const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const totalBytes = Buffer.byteLength(content, "utf-8");
@@ -64,22 +64,22 @@ export function truncateTail(content: string, options: { maxLines?: number; maxB
   let truncatedBy: "lines" | "bytes" = "lines";
   let lastLinePartial = false;
 
-  for (let i = lines.length - 1; i >= 0 && outputLinesArr.length < maxLines; i--) {
+  for (let i = 0; i < lines.length && outputLinesArr.length < maxLines; i++) {
     const line = lines[i];
     const lineBytes = Buffer.byteLength(line, "utf-8") + (outputLinesArr.length > 0 ? 1 : 0);
 
     if (outputBytesCount + lineBytes > maxBytes) {
       truncatedBy = "bytes";
       if (outputLinesArr.length === 0) {
-        const truncatedLine = truncateStringToBytesFromEnd(line, maxBytes);
-        outputLinesArr.unshift(truncatedLine);
+        const truncatedLine = truncateStringToBytesFromStart(line, maxBytes);
+        outputLinesArr.push(truncatedLine);
         outputBytesCount = Buffer.byteLength(truncatedLine, "utf-8");
         lastLinePartial = true;
       }
       break;
     }
 
-    outputLinesArr.unshift(line);
+    outputLinesArr.push(line);
     outputBytesCount += lineBytes;
   }
 
@@ -99,7 +99,7 @@ export function truncateTail(content: string, options: { maxLines?: number; maxB
     outputLines: outputLinesArr.length,
     outputBytes: finalOutputBytes,
     lastLinePartial,
-    firstLineExceedsLimit: false,
+    firstLineExceedsLimit: outputLinesArr.length === 1 && lastLinePartial,
     maxLines,
     maxBytes,
   };
@@ -115,7 +115,7 @@ export function truncateContentForModel(content: ContentBlock[]): {
   }
 
   const fullText = textBlocks.map((block) => block.text ?? "").join("\n");
-  const truncation = truncateTail(fullText);
+  const truncation = truncateHead(fullText);
 
   if (!truncation.truncated) {
     return { content, details: {} };
@@ -125,16 +125,15 @@ export function truncateContentForModel(content: ContentBlock[]): {
   writeFileSync(fullOutputPath, fullText, "utf-8");
 
   let outputText = truncation.content || "(empty result)";
-  const startLine = truncation.totalLines - truncation.outputLines + 1;
-  const endLine = truncation.totalLines;
+  const endLine = truncation.outputLines;
 
   if (truncation.lastLinePartial) {
-    const lastLineSize = formatSize(Buffer.byteLength(fullText.split("\n").pop() || "", "utf-8"));
-    outputText += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${fullOutputPath}]`;
+    const firstLineSize = formatSize(Buffer.byteLength(fullText.split("\n")[0] || "", "utf-8"));
+    outputText += `\n\n[Showing first ${formatSize(truncation.outputBytes)} of line 1 (line is ${firstLineSize}). Full output: ${fullOutputPath}]`;
   } else if (truncation.truncatedBy === "lines") {
-    outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${fullOutputPath}]`;
+    outputText += `\n\n[Showing lines 1-${endLine} of ${truncation.totalLines}. Full output: ${fullOutputPath}]`;
   } else {
-    outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${fullOutputPath}]`;
+    outputText += `\n\n[Showing lines 1-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${fullOutputPath}]`;
   }
 
   const otherBlocks = content.filter((block) => block.type !== "text");
@@ -159,14 +158,14 @@ export function renderTruncatedToolResult(
 
   if (output) {
     const outputLines = output.split("\n");
-    const displayLines = options.expanded ? outputLines : outputLines.slice(-MCP_PREVIEW_LINES);
-
-    if (!options.expanded && outputLines.length > MCP_PREVIEW_LINES) {
-      text += theme.fg("muted", `... (${outputLines.length - MCP_PREVIEW_LINES} earlier lines, Ctrl+O to expand)`);
-      text += "\n";
-    }
+    const displayLines = options.expanded ? outputLines : outputLines.slice(0, MCP_PREVIEW_LINES);
 
     text += displayLines.map((line) => theme.fg("toolOutput", line)).join("\n");
+
+    if (!options.expanded && outputLines.length > MCP_PREVIEW_LINES) {
+      text += "\n";
+      text += theme.fg("muted", `... (${outputLines.length - MCP_PREVIEW_LINES} more lines, Ctrl+O to expand)`);
+    }
   }
 
   const truncation = result.details?.truncation;
@@ -208,15 +207,15 @@ function getResultText(result: { content: ContentBlock[] }, showImages: boolean)
   return `${text}\n${images}`;
 }
 
-function truncateStringToBytesFromEnd(str: string, maxBytes: number): string {
+function truncateStringToBytesFromStart(str: string, maxBytes: number): string {
   const buf = Buffer.from(str, "utf-8");
   if (buf.length <= maxBytes) return str;
 
-  let start = buf.length - maxBytes;
-  while (start < buf.length && (buf[start] & 0xc0) === 0x80) {
-    start++;
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) {
+    end--;
   }
-  return buf.slice(start).toString("utf-8");
+  return buf.slice(0, end).toString("utf-8");
 }
 
 function getTempFilePath(): string {
