@@ -8,6 +8,7 @@ import { transformMcpContent } from "./tool-registrar.js";
 import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js";
 import { truncateAtWord } from "./utils.js";
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.js";
+import { truncateContentBlocks } from "./truncation.js";
 
 type ProxyToolResult = AgentToolResult<Record<string, unknown>>;
 
@@ -764,10 +765,10 @@ export async function executeCall(
     const result = await resultPromise;
 
     const mcpContent = (result.content ?? []) as McpContent[];
-    const content = transformMcpContent(mcpContent);
+    const rawContent = transformMcpContent(mcpContent);
 
     if (result.isError) {
-      const errorText = content
+      const errorText = rawContent
         .filter((c) => c.type === "text")
         .map((c) => (c as { text: string }).text)
         .join("\n") || "Tool execution failed";
@@ -783,9 +784,13 @@ export async function executeCall(
       };
     }
 
+    const { content, truncationDetails } = truncateContentBlocks(
+      rawContent.length > 0 ? rawContent : [{ type: "text" as const, text: "(empty result)" }],
+    );
+
     return {
-      content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
-      details: { mode: "call", mcpResult: result, server: serverName, tool: toolMeta.originalName },
+      content,
+      details: { mode: "call", mcpResult: result, server: serverName, tool: toolMeta.originalName, ...truncationDetails },
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

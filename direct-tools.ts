@@ -10,6 +10,7 @@ import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js";
 import { formatToolName, isToolExcluded } from "./types.js";
 import { resourceNameToToolName } from "./resource-tools.js";
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.js";
+import { truncateContentBlocks } from "./truncation.js";
 
 const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"]);
 
@@ -374,9 +375,13 @@ export function createDirectToolExecutor(
         };
       }
 
+      const { content: truncatedContent, truncationDetails } = truncateContentBlocks(
+        content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
+      );
+
       return {
-        content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
-        details: { server: spec.serverName, tool: spec.originalName },
+        content: truncatedContent,
+        details: { server: spec.serverName, tool: spec.originalName, ...truncationDetails },
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

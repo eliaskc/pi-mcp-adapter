@@ -26,6 +26,9 @@ const mocks = vi.hoisted(() => ({
   executeUiMessages: vi.fn(),
   getConfigPathFromArgv: vi.fn(() => undefined),
   truncateAtWord: vi.fn((text: string) => text),
+  renderProxyCall: vi.fn(),
+  renderDirectCall: vi.fn(),
+  renderMcpResult: vi.fn(),
 }));
 
 vi.mock("../init.js", () => ({
@@ -75,6 +78,12 @@ vi.mock("../proxy-modes.js", () => ({
 vi.mock("../utils.js", () => ({
   getConfigPathFromArgv: mocks.getConfigPathFromArgv,
   truncateAtWord: mocks.truncateAtWord,
+}));
+
+vi.mock("../tool-render.js", () => ({
+  renderProxyCall: mocks.renderProxyCall,
+  renderDirectCall: mocks.renderDirectCall,
+  renderMcpResult: mocks.renderMcpResult,
 }));
 
 function createDeferred<T>() {
