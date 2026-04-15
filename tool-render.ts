@@ -9,11 +9,13 @@
 import {
   truncateToVisualLines,
   keyHint,
+  formatSize,
+  DEFAULT_MAX_BYTES,
+  type TruncationResult,
 } from "@mariozechner/pi-coding-agent";
 import { Container, Text, truncateToWidth } from "@mariozechner/pi-tui";
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import type { Component, ToolRenderResultOptions, ToolRenderContext, AgentToolResult } from "@mariozechner/pi-coding-agent";
-import { formatSize, DEFAULT_MAX_BYTES, type TruncationResult } from "./truncation.js";
 
 /** Number of visual lines to show in collapsed mode. */
 const PREVIEW_LINES = 5;

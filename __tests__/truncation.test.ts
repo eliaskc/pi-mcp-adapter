@@ -1,5 +1,80 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
+
+// Mock pi-coding-agent's truncation exports so truncation.ts can load in tests
+vi.mock("@mariozechner/pi-coding-agent", () => {
+  const DEFAULT_MAX_LINES = 2000;
+  const DEFAULT_MAX_BYTES = 50 * 1024;
+
+  function formatSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes}B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  }
+
+  function truncateStringToBytesFromEnd(str: string, maxBytes: number): string {
+    const buf = Buffer.from(str, "utf-8");
+    if (buf.length <= maxBytes) return str;
+    let start = buf.length - maxBytes;
+    while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++;
+    return buf.slice(start).toString("utf-8");
+  }
+
+  function truncateTail(content: string, options: { maxLines?: number; maxBytes?: number } = {}) {
+    const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
+    const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+    const totalBytes = Buffer.byteLength(content, "utf-8");
+    const lines = content.split("\n");
+    const totalLines = lines.length;
+
+    if (totalLines <= maxLines && totalBytes <= maxBytes) {
+      return {
+        content, truncated: false, truncatedBy: null,
+        totalLines, totalBytes, outputLines: totalLines, outputBytes: totalBytes,
+        lastLinePartial: false, firstLineExceedsLimit: false, maxLines, maxBytes,
+      };
+    }
+
+    const outputLinesArr: string[] = [];
+    let outputBytesCount = 0;
+    let truncatedBy: "lines" | "bytes" = "lines";
+    let lastLinePartial = false;
+
+    for (let i = lines.length - 1; i >= 0 && outputLinesArr.length < maxLines; i--) {
+      const line = lines[i];
+      const lineBytes = Buffer.byteLength(line, "utf-8") + (outputLinesArr.length > 0 ? 1 : 0);
+      if (outputBytesCount + lineBytes > maxBytes) {
+        truncatedBy = "bytes";
+        if (outputLinesArr.length === 0) {
+          const truncatedLine = truncateStringToBytesFromEnd(line, maxBytes);
+          outputLinesArr.unshift(truncatedLine);
+          outputBytesCount = Buffer.byteLength(truncatedLine, "utf-8");
+          lastLinePartial = true;
+        }
+        break;
+      }
+      outputLinesArr.unshift(line);
+      outputBytesCount += lineBytes;
+    }
+
+    if (outputLinesArr.length >= maxLines && outputBytesCount <= maxBytes) {
+      truncatedBy = "lines";
+    }
+
+    const outputContent = outputLinesArr.join("\n");
+    const finalOutputBytes = Buffer.byteLength(outputContent, "utf-8");
+
+    return {
+      content: outputContent, truncated: true, truncatedBy,
+      totalLines, totalBytes, outputLines: outputLinesArr.length,
+      outputBytes: finalOutputBytes, lastLinePartial,
+      firstLineExceedsLimit: false, maxLines, maxBytes,
+    };
+  }
+
+  return { truncateTail, formatSize, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES };
+});
+
 import {
   truncateToolOutput,
   truncateContentBlocks,
@@ -38,7 +113,6 @@ describe("truncateToolOutput", () => {
     expect(result.text).not.toContain("line 1\n");
 
     // Verify temp file contains full output
-    // (Give the write stream a moment to flush)
     await new Promise((resolve) => setTimeout(resolve, 50));
     if (result.details.fullOutputPath) {
       expect(existsSync(result.details.fullOutputPath)).toBe(true);
@@ -48,7 +122,6 @@ describe("truncateToolOutput", () => {
   });
 
   it("truncates by byte size", () => {
-    // Create content that exceeds byte limit but not line limit
     const bigLine = "x".repeat(1000);
     const lines = Array.from({ length: 100 }, () => bigLine);
     const input = lines.join("\n");
@@ -71,7 +144,6 @@ describe("truncateContentBlocks", () => {
     ];
     const result = truncateContentBlocks(blocks);
     expect(result.truncationDetails.truncation).toBeUndefined();
-    // Text blocks get merged into one
     expect(result.content.length).toBe(1);
     expect((result.content[0] as { text: string }).text).toBe("hello\nworld");
   });
@@ -96,9 +168,7 @@ describe("truncateContentBlocks", () => {
     const result = truncateContentBlocks(blocks);
     expect(result.truncationDetails.truncation).toBeDefined();
     expect(result.truncationDetails.truncation!.truncated).toBe(true);
-    // Image block preserved
     expect(result.content.some((b) => b.type === "image")).toBe(true);
-    // Text block truncated
     const textBlock = result.content.find((b) => b.type === "text") as { text: string };
     expect(textBlock).toBeDefined();
     expect(textBlock.text).toContain("Full output:");

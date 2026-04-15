@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildProxyDescription, resolveDirectTools } from "../direct-tools.js";
 import { computeServerHash, type MetadataCache } from "../metadata-cache.js";
 import { buildToolMetadata } from "../tool-metadata.js";
 import type { McpConfig } from "../types.js";
 import { reconstructToolMetadata } from "../metadata-cache.js";
+
+vi.mock("../truncation.js", () => ({
+  truncateContentBlocks: (content: unknown[]) => ({ content, truncationDetails: {} }),
+}));
 
 describe("buildProxyDescription", () => {
   it("documents the ui-messages action", () => {

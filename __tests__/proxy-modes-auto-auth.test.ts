@@ -23,6 +23,10 @@ vi.mock("../init.js", () => ({
   updateStatusBar: mocks.updateStatusBar,
 }));
 
+vi.mock("../truncation.js", () => ({
+  truncateContentBlocks: (content: unknown[]) => ({ content, truncationDetails: {} }),
+}));
+
 describe("proxy auto auth", () => {
   beforeEach(() => {
     vi.resetModules();

@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { executeUiMessages } from "../proxy-modes.js";
 import type { McpExtensionState } from "../state.js";
+
+vi.mock("../truncation.js", () => ({
+  truncateContentBlocks: (content: unknown[]) => ({ content, truncationDetails: {} }),
+}));
 
 function createState(prompts: string[]): McpExtensionState {
   return {

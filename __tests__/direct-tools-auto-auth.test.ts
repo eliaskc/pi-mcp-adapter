@@ -17,6 +17,10 @@ vi.mock("../mcp-auth-flow.js", () => ({
   supportsOAuth: mocks.supportsOAuth,
 }));
 
+vi.mock("../truncation.js", () => ({
+  truncateContentBlocks: (content: unknown[]) => ({ content, truncationDetails: {} }),
+}));
+
 describe("direct tools auto auth", () => {
   beforeEach(() => {
     vi.resetModules();
